@@ -44,6 +44,16 @@ typedef struct {
         STACK_PUSH(sp, atnum); \
     } while(0)
 
+#define DEBUG_MMAP(addr, size, prot, flags, fd, ofs, check_addr) \
+    do { \
+        if (fd < 0) fprintf(stderr, "Elf map (addr: 0x%lx) (size: 0x%lx) (type: ANON)\n", addr, size); \
+        else fprintf(stderr, "Elf map (addr: 0x%lx) (size: 0x%lx) (type: FILE) (offset: 0x%lx)\n", addr, size, ofs); \
+        if ((uint64_t) mmap(addr, size, prot, flags, fd, ofs) != check_addr) { \
+            perror("Error while mmap"); \
+            return -1; \
+        } \
+    } while(0)
+
 int load_elf(const char *elf, void **entry, Elf_Auxv *auxv);
 
 
@@ -180,7 +190,7 @@ int load_exec(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, Elf_Auxv *auxv) {
                 perror("Error while mmap");
                 return -1;
             }
-
+            // DEBUG_MMAP((void *)addr_align, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset), addr_align);
             flags |= MAP_ANON;
 
             uint64_t anon_addr = addr_align + size_align;
@@ -190,6 +200,7 @@ int load_exec(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, Elf_Auxv *auxv) {
                     perror("Error while mmap");
                     return -1;
                 }
+                // DEBUG_MMAP((void *)anon_addr, anon_size, prot, flags, -1, 0, anon_addr);
                 if (prot & PROT_WRITE)
                     memset((void *) (phdr->p_vaddr + phdr->p_filesz), 
                         0UL, 
@@ -271,6 +282,7 @@ int load_dyn(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, void **entry, Elf_Aux
                 perror("Error while mmap");
                 return -1;
             }
+            // DEBUG_MMAP((void *)addr_align + base, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset), addr_align + base);
 
             flags |= MAP_ANON;
 
@@ -281,6 +293,7 @@ int load_dyn(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, void **entry, Elf_Aux
                     perror("Error while mmap");
                     return -1;
                 }
+                // DEBUG_MMAP((void *)anon_addr + base, anon_size, prot, flags, -1, 0, anon_addr + base);
                 if (prot & PROT_WRITE)
                     memset((void *) (phdr->p_vaddr + base + phdr->p_filesz), 0UL, anon_addr - (phdr->p_vaddr + phdr->p_filesz));
             }
