@@ -45,12 +45,15 @@ typedef struct {
         STACK_PUSH(sp, atnum); \
     } while(0)
 
-int exec_fd = 0;
-Elf64_Ehdr exec_ehdr;
-Elf64_Phdr *exec_phdr;
-int interp_fd = 0;
-Elf64_Ehdr interp_ehdr;
-Elf64_Phdr *interp_phdr;
+typedef struct {
+    int fd;
+    uint64_t base;
+    Elf64_Ehdr ehdr;
+    Elf64_Phdr *phdr;
+} Elf_Info;
+
+Elf_Info exec_info;
+Elf_Info interp_info;
 
 int load_elf(const char *elf, int is_interp, void **entry, Elf_Auxv *auxv);
 
@@ -58,16 +61,18 @@ int load_elf(const char *elf, int is_interp, void **entry, Elf_Auxv *auxv);
 static void handler(int sig, siginfo_t *si, void *unused)
 {
     int fd;
+    uint64_t base, addr;
     Elf64_Ehdr *ehdr;
     Elf64_Phdr **phdr_p;
 
-    fd = exec_fd;
-    ehdr = &exec_ehdr;
-    phdr_p = &exec_phdr;
+    fd = exec_info.fd;
+    base = exec_info.base;
+    ehdr = &exec_info.ehdr;
+    phdr_p = &exec_info.phdr;
 
-    printf("Got SIGSEGV at address: 0x%lx",(uint64_t) si->si_addr);
+    // printf("Got SIGSEGV at address: 0x%lx",(uint64_t) si->si_addr);
 
-    uint64_t addr = (uint64_t) si->si_addr;
+    addr = (uint64_t) si->si_addr - base;
 
     for (int i = 0; i < ehdr->e_phnum; i++) {
         Elf64_Phdr *phdr = &((*phdr_p)[i]);
@@ -76,8 +81,39 @@ static void handler(int sig, siginfo_t *si, void *unused)
 
             if ((addr >= phdr->p_vaddr) && (addr < (phdr->p_vaddr + phdr->p_memsz))) {
 
-                printf(" - found\n");
-        
+                // printf(" - found\n");
+
+                int prot = PROT_NONE;
+                if (phdr->p_flags & PF_R) prot |= PROT_READ;
+                if (phdr->p_flags & PF_W) prot |= PROT_WRITE;
+                if (phdr->p_flags & PF_X) prot |= PROT_EXEC;
+
+                int flags = MAP_PRIVATE|MAP_FIXED|MAP_POPULATE;
+
+                uint64_t addr_align = ALIGN_LOW(phdr->p_vaddr);
+                size_t size_align = ALIGN_HIGH(phdr->p_vaddr + phdr->p_filesz) - addr_align;
+                if ((uint64_t) mmap((void *)addr_align+base, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset)) != addr_align+base) {
+                    perror("Error while mmap");
+                    return -1;
+                }
+
+                flags |= MAP_ANON;
+
+                uint64_t anon_addr = addr_align + size_align;
+                size_t anon_size = (ALIGN_HIGH(phdr->p_vaddr + phdr->p_memsz) > anon_addr)? ALIGN_HIGH(phdr->p_vaddr + phdr->p_memsz) - anon_addr : 0;
+                if (anon_size > 0) {
+                    if ((uint64_t) mmap((void *)anon_addr+base, anon_size, prot, flags, -1, 0) != anon_addr+base) {
+                        perror("Error while mmap");
+                        return -1;
+                    }
+                    if (prot & PROT_WRITE)
+                        memset((void *) (phdr->p_vaddr + phdr->p_filesz)+base, 
+                            0UL, 
+                            (size_t) (anon_addr - (phdr->p_vaddr + phdr->p_filesz)));
+                }
+/*
+                // TODO: maps single page, but it doesn't work.
+
                 int prot = PROT_NONE;
                 if (phdr->p_flags & PF_R) prot |= PROT_READ;
                 if (phdr->p_flags & PF_W) prot |= PROT_WRITE;
@@ -86,7 +122,6 @@ static void handler(int sig, siginfo_t *si, void *unused)
                 int flags = MAP_PRIVATE|MAP_FIXED_NOREPLACE|MAP_POPULATE;
 
                 uint64_t addr_align = ALIGN_LOW(addr);
-
                 uint64_t vaddr_align = ALIGN_LOW(phdr->p_vaddr);
 
                 uint64_t filesz = phdr->p_vaddr + phdr->p_filesz - addr_align;
@@ -98,19 +133,19 @@ static void handler(int sig, siginfo_t *si, void *unused)
                     flags |= MAP_ANON;
                     fd = -1;
                     offset = 0;
-                    printf("anon ");
+                    // printf("anon ");
                 }
 
                 printf("mmap %lx (%lx), ofs %lx f: %x\n", addr_align, vaddr_align, offset, prot);
                 if ((uint64_t) mmap((void *)addr_align, PGSIZE, prot, flags, fd, offset) != addr_align) {
                     perror("Error while mmap");
-                    // exit(EXIT_FAILURE);
+                    exit(EXIT_FAILURE);
                 }
                 if ((prot & PROT_WRITE) && (memsz > 0)) {
-                    printf("memset %lx, %lx\n", addr_align + filesz, memsz);
+                    // printf("memset %lx, %lx\n", addr_align + filesz, memsz);
                     memset(addr_align + filesz, 0UL, memsz);
                 }
-
+*/
                 return;
             }
         }
@@ -194,17 +229,17 @@ int setup_stack(int argc, char **argv, char **envp, Elf_Auxv *auxv, void **sp) {
     STACK_PUSH_AUX(rsp, AT_NULL, 0);
     STACK_PUSH_AUX(rsp, AT_RANDOM, rand);
 
-    // STACK_PUSH_AUX(rsp, AT_SYSINFO_EHDR, getauxval(AT_SYSINFO_EHDR));
-    // STACK_PUSH_AUX(rsp, AT_HWCAP, getauxval(AT_HWCAP));
-    // STACK_PUSH_AUX(rsp, AT_HWCAP2, getauxval(AT_HWCAP2));
-    // STACK_PUSH_AUX(rsp, AT_PAGESZ, getauxval(AT_PAGESZ));
-    // STACK_PUSH_AUX(rsp, AT_CLKTCK, getauxval(AT_CLKTCK));
-    // STACK_PUSH_AUX(rsp, AT_FLAGS, getauxval(AT_FLAGS));
-    // STACK_PUSH_AUX(rsp, AT_UID, getauxval(AT_UID));
-    // STACK_PUSH_AUX(rsp, AT_EUID, getauxval(AT_EUID));
-    // STACK_PUSH_AUX(rsp, AT_GID, getauxval(AT_GID));
-    // STACK_PUSH_AUX(rsp, AT_EGID, getauxval(AT_EGID));
-    // STACK_PUSH_AUX(rsp, AT_PLATFORM, getauxval(AT_PLATFORM));
+    STACK_PUSH_AUX(rsp, AT_SYSINFO_EHDR, getauxval(AT_SYSINFO_EHDR));
+    STACK_PUSH_AUX(rsp, AT_HWCAP, getauxval(AT_HWCAP));
+    STACK_PUSH_AUX(rsp, AT_HWCAP2, getauxval(AT_HWCAP2));
+    STACK_PUSH_AUX(rsp, AT_PAGESZ, getauxval(AT_PAGESZ));
+    STACK_PUSH_AUX(rsp, AT_CLKTCK, getauxval(AT_CLKTCK));
+    STACK_PUSH_AUX(rsp, AT_FLAGS, getauxval(AT_FLAGS));
+    STACK_PUSH_AUX(rsp, AT_UID, getauxval(AT_UID));
+    STACK_PUSH_AUX(rsp, AT_EUID, getauxval(AT_EUID));
+    STACK_PUSH_AUX(rsp, AT_GID, getauxval(AT_GID));
+    STACK_PUSH_AUX(rsp, AT_EGID, getauxval(AT_EGID));
+    STACK_PUSH_AUX(rsp, AT_PLATFORM, getauxval(AT_PLATFORM));
 
     for (int i = 0; i < auxv->aux_cnt; i++) {
         STACK_PUSH_AUX(rsp, auxv->aux[i].atnum, auxv->aux[i].atval);
@@ -223,58 +258,12 @@ int setup_stack(int argc, char **argv, char **envp, Elf_Auxv *auxv, void **sp) {
     rsp -= sizeof (char *);
     *((uint64_t *) rsp) = argc - 1;
 
-    // dump_stack(rsp);
+    dump_stack(rsp);
 
     *sp = rsp;
 
     free(envp_p);
     free(argv_p);
-
-    return 0;
-}
-
-int load_exec(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, Elf_Auxv *auxv) {
-    // Read and load segments
-    for (int i = 0; i < ehdr->e_phnum; i++) {
-        Elf64_Phdr *phdr = &phdr_p[i];
-
-        // if (phdr->p_type == PT_LOAD) {
-        //     int prot = PROT_NONE;
-        //     if (phdr->p_flags & PF_R) prot |= PROT_READ;
-        //     if (phdr->p_flags & PF_W) prot |= PROT_WRITE;
-        //     if (phdr->p_flags & PF_X) prot |= PROT_EXEC;
-
-        //     int flags = MAP_PRIVATE|MAP_FIXED_NOREPLACE|MAP_POPULATE;
-
-        //     uint64_t addr_align = ALIGN_LOW(phdr->p_vaddr);
-        //     size_t size_align = ALIGN_HIGH(phdr->p_vaddr + phdr->p_filesz) - addr_align;
-        //     if ((uint64_t) mmap((void *)addr_align, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset)) != addr_align) {
-        //         perror("Error while mmap");
-        //         return -1;
-        //     }
-
-        //     flags |= MAP_ANON;
-
-        //     uint64_t anon_addr = addr_align + size_align;
-        //     size_t anon_size = (ALIGN_HIGH(phdr->p_vaddr + phdr->p_memsz) > anon_addr)? ALIGN_HIGH(phdr->p_vaddr + phdr->p_memsz) - anon_addr : 0;
-        //     if (anon_size > 0) {
-        //         if ((uint64_t) mmap((void *)anon_addr, anon_size, prot, flags, -1, 0) != anon_addr) {
-        //             perror("Error while mmap");
-        //             return -1;
-        //         }
-        //         if (prot & PROT_WRITE)
-        //             memset((void *) (phdr->p_vaddr + phdr->p_filesz), 
-        //                 0UL, 
-        //                 (size_t) (anon_addr - (phdr->p_vaddr + phdr->p_filesz)));
-        //     }
-
-        //     if (phdr->p_offset == 0) {
-        //         AUX_NEW(auxv, AT_PHDR, ehdr->e_phoff + addr_align);
-        //     }
-        // }
-
-        // TODO: relro
-    }
 
     return 0;
 }
@@ -313,15 +302,17 @@ int load_dyn(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, void **entry, Elf_Aux
     } 
 
     if (interp) {
+        interp_info.base = base;
         load_elf(interp, 1, &interp_entry, auxv);
         AUX_NEW(auxv, AT_ENTRY, ehdr->e_entry + base);
     } else {
+        exec_info.base = base;
         AUX_NEW(auxv, AT_BASE, base);
     }
 
-    if (base != (uint64_t)MAP_FAILED) {
-        munmap((void *)base, load_size);
-    }
+    // if (base != (uint64_t)MAP_FAILED) {
+    //     munmap((void *)base, load_size);
+    // }
 
     // Read and load segments
     for (int i = 0; i < ehdr->e_phnum; i++) {
@@ -329,36 +320,7 @@ int load_dyn(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, void **entry, Elf_Aux
 
         // print_phdr(phdr);
 
-        if (phdr->p_type == PT_LOAD) {
-            int prot = PROT_NONE;
-            if (phdr->p_flags & PF_R) prot |= PROT_READ;
-            if (phdr->p_flags & PF_W) prot |= PROT_WRITE;
-            if (phdr->p_flags & PF_X) prot |= PROT_EXEC;
-
-            int flags = MAP_PRIVATE|MAP_FIXED_NOREPLACE|MAP_POPULATE;
-
-            uint64_t addr_align = ALIGN_LOW(phdr->p_vaddr);
-            size_t size_align = ALIGN_HIGH(phdr->p_vaddr + phdr->p_filesz) - addr_align;
-            if ((uint64_t) mmap((void *)addr_align + base, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset)) != addr_align + base) {
-                perror("Error while mmap");
-                return -1;
-            }
-
-            flags |= MAP_ANON;
-
-            uint64_t anon_addr = addr_align + size_align;
-            size_t anon_size = (ALIGN_HIGH(phdr->p_vaddr + phdr->p_memsz) > anon_addr)? ALIGN_HIGH(phdr->p_vaddr + phdr->p_memsz) - anon_addr : 0;
-            if (anon_size > 0) {
-                if ((uint64_t) mmap((void *)anon_addr + base, anon_size, prot, flags, -1, 0) != anon_addr + base) {
-                    perror("Error while mmap");
-                    return -1;
-                }
-                if (prot & PROT_WRITE)
-                    memset((void *) (phdr->p_vaddr + base + phdr->p_filesz), 0UL, anon_addr - (phdr->p_vaddr + phdr->p_filesz));
-            }
-        }
-
-        else if (phdr->p_type == PT_PHDR) {
+        if (phdr->p_type == PT_PHDR) {
             AUX_NEW(auxv, AT_PHDR, ehdr->e_phoff + base);
             AUX_NEW(auxv, AT_PHENT, ehdr->e_phentsize);
             AUX_NEW(auxv, AT_PHNUM, ehdr->e_phnum);
@@ -384,13 +346,13 @@ int load_elf(const char *elf, int is_interp, void **entry, Elf_Auxv *auxv) {
     Elf64_Phdr **phdr;
 
     if (is_interp) {
-        fd = &interp_fd;
-        ehdr = &interp_ehdr;
-        phdr = &interp_phdr;
+        fd = &interp_info.fd;
+        ehdr = &interp_info.ehdr;
+        phdr = &interp_info.phdr;
     } else {
-        fd = &exec_fd;
-        ehdr = &exec_ehdr;
-        phdr = &exec_phdr;
+        fd = &exec_info.fd;
+        ehdr = &exec_info.ehdr;
+        phdr = &exec_info.phdr;
     }
 
     if ((*fd = open(elf, O_RDONLY)) < 0) {
@@ -419,11 +381,11 @@ int load_elf(const char *elf, int is_interp, void **entry, Elf_Auxv *auxv) {
     }
 
     if (ehdr->e_type == ET_EXEC) {
-        // AUX_NEW(auxv, AT_ENTRY, ehdr->e_entry);
-        // AUX_NEW(auxv, AT_PHENT, ehdr->e_phentsize);
-        // AUX_NEW(auxv, AT_PHNUM, ehdr->e_phnum);
+        AUX_NEW(auxv, AT_ENTRY, ehdr->e_entry);
+        AUX_NEW(auxv, AT_PHENT, ehdr->e_phentsize);
+        AUX_NEW(auxv, AT_PHNUM, ehdr->e_phnum);
         *entry = (void *) ehdr->e_entry;
-        ret = load_exec(*fd, ehdr, *phdr, auxv);
+        ret = 0;
     }
     else if (ehdr->e_type == ET_DYN) {
         ret = load_dyn(*fd, ehdr, *phdr, entry, auxv);
@@ -448,6 +410,9 @@ int main(int argc, char **argv, char **envp) {
     trappola.sa_sigaction = handler;
     sigaction(SIGSEGV, &trappola, NULL);
 
+    memset(&exec_info, 0UL, sizeof (Elf_Info));
+    memset(&interp_info, 0UL, sizeof (Elf_Info));
+
     if (argc < 2) {
         printf("Usage: %s [binary] [args...]\n", argv[0]);
         exit(0);
@@ -455,7 +420,7 @@ int main(int argc, char **argv, char **envp) {
 
     auxv.aux_cnt = 0;
     memset(auxv.aux, 0UL, sizeof (Elf_Aux) * MAX_AUXV);
-    // AUX_NEW(&auxv, AT_EXECFN, (uint64_t)argv[1]);
+    AUX_NEW(&auxv, AT_EXECFN, (uint64_t)argv[1]);
 
     if (load_elf(argv[1], 0, &entry, &auxv) < 0) {
         exit(EXIT_FAILURE);
@@ -465,7 +430,7 @@ int main(int argc, char **argv, char **envp) {
         exit(EXIT_FAILURE);
     }
 
-    // printf("%d %lx %lx\n", exec_fd, exec_ehdr, exec_phdr);
+    printf("exe: %lx, int: %lx\n", exec_info.base, interp_info.base );
 
     start_exec(entry, sp);
 }
