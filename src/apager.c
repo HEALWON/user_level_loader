@@ -317,7 +317,7 @@ int load_elf(const char *elf, void **entry, Elf_Auxv *auxv) {
 
     // Read and validate elf file header
     lseek(fd, 0, SEEK_SET);
-    if (read(fd, &ehdr, sizeof ehdr) < 0) {
+    if (read(fd, &ehdr, sizeof (Elf64_Ehdr)) < 0) {
         perror("Error while reading file header");
         return -1;
     };
@@ -351,6 +351,8 @@ int load_elf(const char *elf, void **entry, Elf_Auxv *auxv) {
     }
 
     free(phdr);
+
+    close(fd);
 
     return ret;
 }
