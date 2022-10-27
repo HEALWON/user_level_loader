@@ -90,7 +90,7 @@ int setup_stack(int argc, char **argv, char **envp, Elf_Auxv *auxv, void **sp) {
     char *rsp;
     void *stack_end;
 
-    uint64_t size = PGSIZE*5; // TODO: proper size (cannot grow)
+    uint64_t size = PGSIZE*8; // TODO: proper size (cannot grow)
     int prot = PROT_READ|PROT_WRITE;
     int flags = MAP_PRIVATE|MAP_GROWSDOWN|MAP_POPULATE|MAP_STACK|MAP_ANON;
 
@@ -186,21 +186,13 @@ int load_exec(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, Elf_Auxv *auxv) {
 
             uint64_t addr_align = ALIGN_LOW(phdr->p_vaddr);
             size_t size_align = ALIGN_HIGH(phdr->p_vaddr + phdr->p_filesz) - addr_align;
-            if ((uint64_t) mmap((void *)addr_align, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset)) != addr_align) {
-                perror("Error while mmap");
-                return -1;
-            }
-            // DEBUG_MMAP((void *)addr_align, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset), addr_align);
+            DEBUG_MMAP((void *)addr_align, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset), addr_align);
             flags |= MAP_ANON;
 
             uint64_t anon_addr = addr_align + size_align;
             size_t anon_size = (ALIGN_HIGH(phdr->p_vaddr + phdr->p_memsz) > anon_addr)? ALIGN_HIGH(phdr->p_vaddr + phdr->p_memsz) - anon_addr : 0;
             if (anon_size > 0) {
-                if ((uint64_t) mmap((void *)anon_addr, anon_size, prot, flags, -1, 0) != anon_addr) {
-                    perror("Error while mmap");
-                    return -1;
-                }
-                // DEBUG_MMAP((void *)anon_addr, anon_size, prot, flags, -1, 0, anon_addr);
+                DEBUG_MMAP((void *)anon_addr, anon_size, prot, flags, -1, 0, anon_addr);
                 if (prot & PROT_WRITE)
                     memset((void *) (phdr->p_vaddr + phdr->p_filesz), 
                         0UL, 
@@ -255,7 +247,7 @@ int load_dyn(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, void **entry, Elf_Aux
         load_elf(interp, &interp_entry, auxv);
         AUX_NEW(auxv, AT_ENTRY, ehdr->e_entry + base);
     } else {
-        AUX_NEW(auxv, AT_BASE, base);
+        AUX_NEW(auxv, AT_BASE, base);   
     }
 
     if (base != (uint64_t)MAP_FAILED) {
@@ -278,22 +270,14 @@ int load_dyn(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, void **entry, Elf_Aux
 
             uint64_t addr_align = ALIGN_LOW(phdr->p_vaddr);
             size_t size_align = ALIGN_HIGH(phdr->p_vaddr + phdr->p_filesz) - addr_align;
-            if ((uint64_t) mmap((void *)addr_align + base, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset)) != addr_align + base) {
-                perror("Error while mmap");
-                return -1;
-            }
-            // DEBUG_MMAP((void *)addr_align + base, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset), addr_align + base);
+            DEBUG_MMAP((void *)addr_align + base, size_align, prot, flags, fd, ALIGN_LOW(phdr->p_offset), addr_align + base);
 
             flags |= MAP_ANON;
 
             uint64_t anon_addr = addr_align + size_align;
             size_t anon_size = (ALIGN_HIGH(phdr->p_vaddr + phdr->p_memsz) > anon_addr)? ALIGN_HIGH(phdr->p_vaddr + phdr->p_memsz) - anon_addr : 0;
             if (anon_size > 0) {
-                if ((uint64_t) mmap((void *)anon_addr + base, anon_size, prot, flags, -1, 0) != anon_addr + base) {
-                    perror("Error while mmap");
-                    return -1;
-                }
-                // DEBUG_MMAP((void *)anon_addr + base, anon_size, prot, flags, -1, 0, anon_addr + base);
+                DEBUG_MMAP((void *)anon_addr + base, anon_size, prot, flags, -1, 0, anon_addr + base);
                 if (prot & PROT_WRITE)
                     memset((void *) (phdr->p_vaddr + base + phdr->p_filesz), 0UL, anon_addr - (phdr->p_vaddr + phdr->p_filesz));
             }
