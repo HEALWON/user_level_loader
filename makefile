@@ -2,8 +2,8 @@ CC = gcc
 CFLAGS = -static
 
 TARGET_TEST = dyn stat
-TARGET = apager
-OBJS = loader.o debug.o
+TARGET = apager dpager
+OBJS = debug.o
 
 all: $(TARGET) $(TARGET_TEST)
 
@@ -18,10 +18,15 @@ dyn: tests/hello_world.c
 stat: tests/hello_world.c 
 	$(CC) $(CFLAGS) -o $@ $^
 
-apager: $(OBJS)
+apager: apager.o $(OBJS)
 	$(CC) -o $@ $^
 
-loader.o: src/loader.c
+dpager: dpager.o $(OBJS)
+	$(CC) -o $@ $^
+
+apager.o: src/apager.c
+	$(CC) -c $^
+dpager.o: src/dpager.c
 	$(CC) -c $^
 debug.o: src/debug.c src/debug.h
 	$(CC) -c $^
