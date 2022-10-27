@@ -6,7 +6,6 @@
 #include <sys/mman.h>
 #include <sys/auxv.h>
 #include <elf.h>
-#include <signal.h>
 
 #include "debug.h"
 
@@ -47,15 +46,6 @@ typedef struct {
 
 int load_elf(const char *elf, void **entry, Elf_Auxv *auxv);
 
-
-// // TODO: Demand Paging
-// static void handler(int sig, siginfo_t *si, void *unused)
-// {
-//     printf("Got SIGSEGV at address: 0x%lx\n",(long) si->si_addr);
-//     printf("Implements the handler only\n");
-
-//     exit(EXIT_FAILURE);
-// }
 
 void start_exec(void *entry, void *sp) {
     __asm__ __volatile__(
@@ -171,7 +161,7 @@ int setup_stack(int argc, char **argv, char **envp, Elf_Auxv *auxv, void **sp) {
     return 0;
 }
 
-int load_exec(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p) {
+int load_exec(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p, Elf_Auxv *auxv) {
     // Read and load segments
     for (int i = 0; i < ehdr->e_phnum; i++) {
         Elf64_Phdr *phdr = &phdr_p[i];
@@ -204,6 +194,10 @@ int load_exec(int fd, Elf64_Ehdr *ehdr, Elf64_Phdr *phdr_p) {
                     memset((void *) (phdr->p_vaddr + phdr->p_filesz), 
                         0UL, 
                         (size_t) (anon_addr - (phdr->p_vaddr + phdr->p_filesz)));
+            }
+
+            if (phdr->p_offset == 0) {
+                AUX_NEW(auxv, AT_PHDR, ehdr->e_phoff + addr_align);
             }
         }
 
@@ -343,8 +337,10 @@ int load_elf(const char *elf, void **entry, Elf_Auxv *auxv) {
 
     if (ehdr.e_type == ET_EXEC) {
         AUX_NEW(auxv, AT_ENTRY, ehdr.e_entry);
+        AUX_NEW(auxv, AT_PHENT, ehdr.e_phentsize);
+        AUX_NEW(auxv, AT_PHNUM, ehdr.e_phnum);
         *entry = (void *) ehdr.e_entry;
-        ret = load_exec(fd, &ehdr, phdr);
+        ret = load_exec(fd, &ehdr, phdr, auxv);
     }
     else if (ehdr.e_type == ET_DYN) {
         ret = load_dyn(fd, &ehdr, phdr, entry, auxv);
@@ -363,8 +359,6 @@ int main(int argc, char **argv, char **envp) {
     int fd;
     Elf_Auxv auxv;
     void *entry, *sp;
-
-    // signal(SIGSEGV, handler);
 
     if (argc < 2) {
         printf("Usage: %s [binary] [args...]\n", argv[0]);
