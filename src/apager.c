@@ -32,16 +32,16 @@ typedef struct {
         (auxv)->aux_cnt++; \
     } while(0)
 
-#define STACK_PUSH(sp, x) \
+#define STACK_PUSH_U64(sp, x) \
     do { \
-        (sp) = ((void *)(sp)) - 8; \
+        (sp) = ((void *)(sp)) - sizeof (uint64_t); \
         *((uint64_t *)(sp)) = (uint64_t) (x); \
     } while(0)
 
 #define STACK_PUSH_AUX(sp, atnum, atval) \
     do { \
-        STACK_PUSH(sp, atval); \
-        STACK_PUSH(sp, atnum); \
+        STACK_PUSH_U64(sp, atval); \
+        STACK_PUSH_U64(sp, atnum); \
     } while(0)
 
 #define DEBUG_MMAP(addr, size, prot, flags, fd, ofs, check_addr) \
@@ -125,41 +125,46 @@ int setup_stack(int argc, char **argv, char **envp, Elf_Auxv *auxv, void **sp) {
     }
     char *rand = rsp;
 
-    // Align stack by 16 bytes.
     rsp = (char *) ((uint64_t) rsp &  ~0xfUL);
+
+    // Setup auxv.
+    AUX_NEW(auxv,  AT_RANDOM, rand);
+    AUX_NEW(auxv,  AT_SYSINFO_EHDR, getauxval(AT_SYSINFO_EHDR));
+    AUX_NEW(auxv,  AT_HWCAP, getauxval(AT_HWCAP));
+    AUX_NEW(auxv,  AT_HWCAP2, getauxval(AT_HWCAP2));
+    AUX_NEW(auxv,  AT_PAGESZ, getauxval(AT_PAGESZ));
+    AUX_NEW(auxv,  AT_CLKTCK, getauxval(AT_CLKTCK));
+    AUX_NEW(auxv,  AT_FLAGS, getauxval(AT_FLAGS));
+    AUX_NEW(auxv,  AT_UID, getauxval(AT_UID));
+    AUX_NEW(auxv,  AT_EUID, getauxval(AT_EUID));
+    AUX_NEW(auxv,  AT_GID, getauxval(AT_GID));
+    AUX_NEW(auxv,  AT_EGID, getauxval(AT_EGID));
+    AUX_NEW(auxv,  AT_PLATFORM, getauxval(AT_PLATFORM));
+
+    // Align stack so that rsp be aligned by 16 at last.
+    // 1 (argc) + argc (argv) + envc + 1 (envp) + aux_cnt*2 + 2 (auxv) 
+    int args_cnt = (auxv->aux_cnt * 2) + envc + argc + 4;
+    if (args_cnt % 2) STACK_PUSH_U64(rsp, 0);
 
     // Fill auxv.
     STACK_PUSH_AUX(rsp, AT_NULL, 0);
-    STACK_PUSH_AUX(rsp, AT_RANDOM, rand);
-
-    STACK_PUSH_AUX(rsp, AT_SYSINFO_EHDR, getauxval(AT_SYSINFO_EHDR));
-    STACK_PUSH_AUX(rsp, AT_HWCAP, getauxval(AT_HWCAP));
-    STACK_PUSH_AUX(rsp, AT_HWCAP2, getauxval(AT_HWCAP2));
-    STACK_PUSH_AUX(rsp, AT_PAGESZ, getauxval(AT_PAGESZ));
-    STACK_PUSH_AUX(rsp, AT_CLKTCK, getauxval(AT_CLKTCK));
-    STACK_PUSH_AUX(rsp, AT_FLAGS, getauxval(AT_FLAGS));
-    STACK_PUSH_AUX(rsp, AT_UID, getauxval(AT_UID));
-    STACK_PUSH_AUX(rsp, AT_EUID, getauxval(AT_EUID));
-    STACK_PUSH_AUX(rsp, AT_GID, getauxval(AT_GID));
-    STACK_PUSH_AUX(rsp, AT_EGID, getauxval(AT_EGID));
-    STACK_PUSH_AUX(rsp, AT_PLATFORM, getauxval(AT_PLATFORM));
-
     for (int i = 0; i < auxv->aux_cnt; i++) {
         STACK_PUSH_AUX(rsp, auxv->aux[i].atnum, auxv->aux[i].atval);
     }
-    
-    rsp -= sizeof (char *);
-    *((uint64_t *) rsp) = 0;
+
+    // Fill envp.
+    STACK_PUSH_U64(rsp, 0);
     rsp -= sizeof (char *) * (envc);
     memcpy(rsp, envp_p, sizeof (char *) * (envc));
 
-    rsp -= sizeof (char *);
-    *((uint64_t *) rsp) = 0;
+    // Fill argv
+    STACK_PUSH_U64(rsp, 0);
     rsp -= sizeof (char *) * (argc - 1);
     memcpy(rsp, argv_p, sizeof (char *) * (argc-1));
 
-    rsp -= sizeof (char *);
-    *((uint64_t *) rsp) = argc - 1;
+    // Set argc
+    STACK_PUSH_U64(rsp, 0);
+    *((int *) rsp) = argc - 1;
 
     // dump_stack(rsp);
 
